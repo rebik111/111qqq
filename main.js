@@ -1,301 +1,353 @@
 (function () {
     'use strict';
 
-    var NAME = 'kyivstar_tv_left_menu';
-    var TITLE = 'Kyivstar TV — канали';
-    var API = 'https://clients.production.vidmind.com/vidmind-stb-ws/';
+    if (typeof Lampa === "undefined") return;
+
+    var TITLE = 'Kyivstar TV';
+    var COMPONENT = 'kyivstar_tv';
+    var API_BASE = 'https://clients.production.vidmind.com/vidmind-stb-ws/';
     var AUTH_REALM = '557455cfe4b04ad886a6ae41';
+    var USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0';
+    var REFERER = 'https://tv.kyivstar.ua/';
+
     var KEYS = {
-        session: 'kyivstar_session',
-        deviceId: 'kyivstar_device_id',
+        loginType: 'kyivstar_login_type',
+        username: 'kyivstar_username',
+        password: 'kyivstar_password',
+        phone: 'kyivstar_phone',
+        otp: 'kyivstar_otp',
         locale: 'kyivstar_locale',
-        proxy: 'kyivstar_proxy',
-        appendHeaders: 'kyivstar_append_stream_headers'
+        deviceId: 'kyivstar_device_id',
+        session: 'kyivstar_session'
     };
-    var active = false;
-    var currentComponent = null;
 
-    function notify(text) {
-        if (window.Lampa && Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(text);
-        else console.log(TITLE + ': ' + text);
+    var DEFAULTS = {};
+    DEFAULTS[KEYS.loginType] = 'anonymous';
+    DEFAULTS[KEYS.username] = '';
+    DEFAULTS[KEYS.password] = '';
+    DEFAULTS[KEYS.phone] = '';
+    DEFAULTS[KEYS.otp] = '';
+    DEFAULTS[KEYS.locale] = 'uk_UA';
+    DEFAULTS[KEYS.deviceId] = '';
+    DEFAULTS[KEYS.session] = null;
+
+    function setting(name) {
+        return Lampa.Storage.get(name, DEFAULTS[name]);
     }
-
-    function storage(key, fallback) {
-        try { return Lampa.Storage.get(key, fallback); } catch (e) { return fallback; }
+    function saveSetting(name, value) {
+        Lampa.Storage.set(name, value);
     }
-
-    function save(key, value) {
-        try { Lampa.Storage.set(key, value); } catch (e) {}
+    function notify(msg) {
+        if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(msg);
+        else console.log('[KyivstarTV] ' + msg);
+    }
+    function log(m) {
+        try { console.log('[KyivstarTV] ' + m); } catch (e) {}
     }
 
     function uuid() {
+        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-            var r = Math.random() * 16 | 0;
-            return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+            var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
         });
     }
 
-    function deviceId() {
-        var id = storage(KEYS.deviceId, '');
-        if (!id) { id = uuid(); save(KEYS.deviceId, id); }
-        return id;
+    function ensureDeviceId() {
+        if (!setting(KEYS.deviceId)) saveSetting(KEYS.deviceId, uuid());
     }
 
-    function apiUrl(path) {
-        var url = API + path;
-        var proxy = storage(KEYS.proxy, '');
-        if (proxy) {
-            if (proxy.indexOf('{url}') !== -1) return proxy.replace('{url}', encodeURIComponent(url));
-            return proxy.replace(/\/?$/, '/') + encodeURIComponent(url);
-        }
-        return url;
+    // ---------- Kyivstar API ----------
+    function KyivstarApi() {
+        this.network = Lampa.Reguest ? new Lampa.Reguest() : null;
     }
 
-    function request(path, options) {
-        options = options || {};
-        var network = Lampa.Reguest ? new Lampa.Reguest() : null;
-        var url = apiUrl(path);
-        var headers = {
-            'x-vidmind-device-id': deviceId(),
+    KyivstarApi.prototype.headers = function () {
+        return {
+            'x-vidmind-device-id': setting(KEYS.deviceId),
             'x-vidmind-device-type': 'WEB',
             'x-vidmind-image-sizes': '2_3_XL,16_9_XL,16_9_L,1_1_XL',
-            'x-vidmind-locale': storage(KEYS.locale, 'uk_UA')
+            'x-vidmind-locale': setting(KEYS.locale),
+            'Origin': 'https://tv.kyivstar.ua',
+            'Referer': 'https://tv.kyivstar.ua/'
         };
-        Object.keys(options.headers || {}).forEach(function (key) { headers[key] = options.headers[key]; });
-        var method = options.method || 'GET';
-        var body = false;
-        var dataType = options.dataType || 'json';
-        if (options.json !== undefined) {
-            body = JSON.stringify(options.json);
-            headers['Content-Type'] = 'application/json';
-        } else if (options.form) {
-            body = Object.keys(options.form).map(function (key) {
-                return encodeURIComponent(key) + '=' + encodeURIComponent(options.form[key]);
-            }).join('&');
-            headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
-        }
-        return new Promise(function (resolve, reject) {
-            function ok(data) {
-                if (dataType === 'json' && typeof data === 'string') {
-                    try { data = JSON.parse(data); } catch (e) { reject(e); return; }
-                }
-                resolve(data);
-            }
-            function fail(error) {
-                var message = error && (error.responseJSON && error.responseJSON.description || error.responseText || error.message);
-                reject(new Error(message || (error && error.status ? 'HTTP ' + error.status : 'Запит до Kyivstar TV не вдався')));
-            }
-            if (network && (network.native || network.silent)) {
-                if (network.timeout) network.timeout(20000);
-                (network.native || network.silent).call(network, url, ok, fail, body, {
-                    type: method, headers: headers, dataType: dataType, timeout: 20000
-                });
-            } else if (window.fetch) {
-                fetch(url, { method: method, headers: headers, body: body || undefined }).then(function (res) {
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    return dataType === 'text' ? res.text() : res.json();
-                }).then(ok).catch(fail);
-            } else reject(new Error('Немає мережевого API Lampa'));
-        });
-    }
+    };
 
-    function ensureSession() {
-        var s = storage(KEYS.session, null);
-        if (s && s.sessionId && s.userId) return Promise.resolve(s);
-        return request('authentication/login', {
+    KyivstarApi.prototype.request = function (path, options) {
+        var self = this;
+        var opts = Object.assign({ headers: this.headers() }, options || {});
+        return new Promise(function (resolve, reject) {
+            if (self.network && self.network.native) {
+                self.network.timeout(20000);
+                self.network.native(API_BASE + path, function (data) { resolve(data); }, function (err) {
+                    reject(err || new Error('network error'));
+                }, opts.form || false, {
+                    type: opts.method || 'GET',
+                    headers: opts.headers,
+                    dataType: opts.dataType || 'json',
+                    timeout: 20000
+                });
+            } else {
+                fetch(API_BASE + path, {
+                    method: opts.method || 'GET',
+                    headers: opts.headers,
+                    body: opts.form || undefined
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                }).then(resolve).catch(reject);
+            }
+        });
+    };
+
+    KyivstarApi.prototype.withSession = function (handler) {
+        var self = this;
+        return this.ensureSession(false).then(function (s) {
+            return Promise.resolve(handler(s)).catch(function (err) {
+                if (err.status === 401) return self.ensureSession(true).then(function (ns) { return handler(ns); });
+                throw err;
+            });
+        });
+    };
+
+    KyivstarApi.prototype.ensureSession = function (force) {
+        var cur = setting(KEYS.session);
+        if (!force && cur && cur.sessionId && cur.userId) return Promise.resolve(cur);
+
+        var loginType = setting(KEYS.loginType);
+        var p = this.loginAnonymous();
+        return p.then(function (profile) {
+            if (!profile || !profile.sessionId) throw new Error('Login failed');
+            saveSetting(KEYS.session, { userId: profile.userId, sessionId: profile.sessionId });
+            return setting(KEYS.session);
+        });
+    };
+
+    KyivstarApi.prototype.loginAnonymous = function () {
+        var self = this;
+        return self.request('authentication/login', {
             method: 'POST',
             form: { username: AUTH_REALM + '\\anonymous', password: 'anonymous' }
-        }).then(function (profile) {
-            if (!profile || !profile.sessionId || !profile.userId) throw new Error('Kyivstar TV не повернув сесію. Відкрий налаштування оригінального плагіна й онови вхід.');
-            save(KEYS.session, { sessionId: profile.sessionId, userId: profile.userId });
-            return storage(KEYS.session, null);
         });
-    }
+    };
 
-    function withSession(pathBuilder, options) {
-        return ensureSession().then(function (s) {
-            return request(pathBuilder(s), options);
+    KyivstarApi.prototype.getLiveChannelGroups = function () {
+        var self = this;
+        return this.withSession(function (s) {
+            return self.request('v1/contentareas/LIVE_CHANNELS;jsessionid=' + encodeURIComponent(s.sessionId) + '?includeRestricted=true&limit=100');
         });
-    }
+    };
 
-    function asArray(value) {
-        if (Array.isArray(value)) return value;
-        if (!value) return [];
-        return value.items || value.elements || value.results || value.content || value.assets || [];
-    }
+    KyivstarApi.prototype.getGroupElements = function (groupId) {
+        var self = this;
+        return this.withSession(function (s) {
+            return self.request('gallery/contentgroups/' + encodeURIComponent(groupId) + ';jsessionid=' + encodeURIComponent(s.sessionId) + '?offset=0&limit=500');
+        });
+    };
 
-    function groups() {
-        return withSession(function (s) {
-            return 'v1/contentareas/LIVE_CHANNELS;jsessionid=' + encodeURIComponent(s.sessionId) + '?includeRestricted=true&limit=100';
-        }).then(asArray);
-    }
-
-    function channels(groupId) {
-        return withSession(function (s) {
-            return 'gallery/contentgroups/' + encodeURIComponent(groupId) + ';jsessionid=' + encodeURIComponent(s.sessionId) + '?offset=0&limit=500';
-        }).then(asArray);
-    }
-
-    function titleOf(item) { return item && (item.displayName || item.name || item.title || item.assetId) || 'Телеканал'; }
-    function idOf(item) { return item && (item.assetId || item.id || item.contentGroupId); }
-    function imageOf(item) {
-        var imgs = item && item.images;
-        if (!Array.isArray(imgs) || !imgs.length) return '';
-        var preferred = imgs.filter(function (im) { return im && im.url && /2_3_XL|16_9_XL|16_9_L/i.test(im.url); })[0] || imgs[0];
-        return preferred && preferred.url || '';
-    }
-
-    function playChannel(channel) {
-        var assetId = idOf(channel);
-        if (!assetId) { notify('У каналу немає assetId'); return; }
-        notify('Завантажую потік: ' + titleOf(channel));
-        withSession(function (s) {
+    KyivstarApi.prototype.getStreamUrl = function (assetId, videoType) {
+        var self = this;
+        return this.withSession(function (s) {
             var version = s.userId === 'anonymous' ? '4' : '2';
-            return 'play/v' + version + ';jsessionid=' + encodeURIComponent(s.sessionId) + '?assetId=' + encodeURIComponent(assetId);
-        }).then(function (data) {
-            var url = data && data.liveChannelUrl || (data && data.media && data.media[0] && data.media[0].url);
-            if (!url) throw new Error(data && (data.description || data.error) || 'API не повернув URL потоку');
-            if (storage(KEYS.appendHeaders, true) !== false && url.indexOf('|') === -1) {
-                var ua = encodeURIComponent('Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0');
-                url += '|User-Agent="' + ua + '"&Referer="' + encodeURIComponent('https://tv.kyivstar.ua/') + '"';
-            }
-            Lampa.Player.play({ title: titleOf(channel), url: url, poster: imageOf(channel), timeline: false });
-        }).catch(function (err) { notify('Не вдалося запустити канал: ' + (err.message || err)); });
-    }
-
-    function addStyles() {
-        if (document.getElementById('ks-left-menu-style')) return;
-        var style = document.createElement('style');
-        style.id = 'ks-left-menu-style';
-        style.textContent = [
-            '.kslm{display:flex;gap:1.4em;height:calc(100vh - 7em);min-height:25em;padding:1.4em 2em;box-sizing:border-box;color:#fff}',
-            '.kslm__side{width:29%;max-width:24em;min-width:15em;overflow-y:auto;border-right:1px solid #ffffff22;padding-right:1em}',
-            '.kslm__main{flex:1;min-width:0;overflow-y:auto;padding-right:.6em}',
-            '.kslm__heading{font-size:1.6em;font-weight:600;margin:0 0 .8em}',
-            '.kslm__item{padding:.72em .9em;margin:.18em 0;border-radius:.3em;background:rgba(255,255,255,.045);font-size:1.08em;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-            '.kslm__item.focus,.kslm__item:hover,.kslm__item:focus{background:rgba(255,255,255,.2);outline:2px solid #fff}',
-            '.kslm__item.active{background:rgba(255,255,255,.14);border-left:3px solid #fff}',
-            '.kslm__channel{display:flex;align-items:center;gap:1em;padding:.7em;margin:.15em 0;border-radius:.3em;min-height:3.8em}',
-            '.kslm__logo{width:5em;height:3em;object-fit:contain;flex-shrink:0}',
-            '.kslm__message{opacity:.8;padding:.8em;white-space:pre-wrap}',
-            '@media(max-width:800px){.kslm{padding:1em;gap:.8em}.kslm__side{width:34%;min-width:10em}}'
-        ].join('\n');
-        document.head.appendChild(style);
-    }
-
-    function makeItem(text, className, action, image) {
-        var item = $('<div class="kslm__item selector ' + (className || '') + '"></div>');
-        if (image) item.append($('<img class="kslm__logo">').attr('src', image));
-        item.append($('<span></span>').text(text));
-        item.attr('tabindex', '0');
-        item.on('hover:enter click', function () { if (action) action(); });
-        item.on('keydown', function (event) {
-            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (action) action(); }
+            var path = 'play/v' + version + ';jsessionid=' + encodeURIComponent(s.sessionId) + '?assetId=' + encodeURIComponent(assetId);
+            if (videoType === 'VIRTUAL') path += '&date=-1000';
+            return self.request(path, { retries: 0 }).then(function (data) {
+                if (data && data.error) throw new Error(data.description || data.error);
+                if (videoType === 'VIRTUAL' && data.media && data.media[0] && data.media[0].url) return { url: data.media[0].url };
+                if (videoType !== 'VIRTUAL' && data.liveChannelUrl) return { url: data.liveChannelUrl };
+                throw new Error('No stream URL');
+            });
         });
-        return item;
+    };
+
+    // ---------- Helpers ----------
+    function mapChannel(ch) {
+        var images = ch.images || [];
+        var logo = images.length ? (images[0].url || '') : '';
+        var type = ch.type || {};
+        var typeValue = type && type.value ? type.value : (type || '');
+        var purchased = ch.purchased !== false;
+        return {
+            id: ch.assetId,
+            title: ch.name || ch.displayName || 'Channel',
+            image: logo,
+            assetId: ch.assetId,
+            videoType: (typeValue === 'VIRTUAL') ? 'VIRTUAL' : 'IP',
+            locked: !purchased,
+            group: ch.group || ''
+        };
     }
 
-    function openScreen() {
-        if (!window.Lampa || !Lampa.Component || !Lampa.Activity) {
-            notify('Lampa ще не готова. Перезапусти застосунок.');
+    function loadAllChannels(api, cb) {
+        notify('Завантаження каналів...');
+        api.getLiveChannelGroups().then(function (groups) {
+            var all = [];
+            var pending = groups.length;
+            if (pending === 0) { cb([]); return; }
+            groups.forEach(function (g) {
+                api.getGroupElements(g.assetId || g.id).then(function (list) {
+                    (list || []).forEach(function (ch) {
+                        if (ch.purchased === false) return;
+                        all.push(mapChannel(ch));
+                    });
+                    pending--;
+                    if (pending === 0) cb(all);
+                }).catch(function () {
+                    pending--;
+                    if (pending === 0) cb(all);
+                });
+            });
+        }).catch(function (err) {
+            notify('Помилка: ' + (err.message || err));
+            cb([]);
+        });
+    }
+
+    function playItem(api, item) {
+        api.getStreamUrl(item.assetId, item.videoType).then(function (stream) {
+            var url = stream.url + '|User-Agent="' + encodeURIComponent(USER_AGENT) + '"&Referer="' + encodeURIComponent(REFERER) + '"';
+            if (Lampa.Player && Lampa.Player.play) {
+                Lampa.Player.play({ title: item.title, url: url, poster: item.image || '', timeline: false });
+            }
+        }).catch(function (err) {
+            notify(err.message || 'Помилка відтворення');
+        });
+    }
+
+    function showChannels(api, items) {
+        if (!Lampa.Select || !Lampa.Select.show) {
+            notify(TITLE + ': Lampa.Select недоступний');
             return;
         }
-        addStyles();
-        var componentName = NAME + '_screen';
-        var page = $('<div class="kslm"><aside class="kslm__side"><div class="kslm__heading">Категорії</div><div class="kslm__groups"></div></aside><main class="kslm__main"><div class="kslm__heading">Телеканали</div><div class="kslm__channels"><div class="kslm__message">Завантаження категорій…</div></div></main></div>');
-        var groupsRoot = page.find('.kslm__groups');
-        var channelsRoot = page.find('.kslm__channels');
-        var selectedGroup = null;
-        var generation = 0;
 
-        function showChannels(group) {
-            selectedGroup = group;
-            generation++;
-            var token = generation;
-            groupsRoot.find('.kslm__item').removeClass('active').each(function () {
-                if (String($(this).attr('data-group')) === String(idOf(group))) $(this).addClass('active');
-            });
-            channelsRoot.empty().append($('<div class="kslm__message"></div>').text('Завантаження «' + titleOf(group) + '»…'));
-            channels(idOf(group)).then(function (items) {
-                if (token !== generation) return;
-                channelsRoot.empty();
-                if (!items.length) {
-                    channelsRoot.append($('<div class="kslm__message"></div>').text('У цій категорії каналів не знайдено.'));
-                    return;
-                }
-                items.forEach(function (channel) {
-                    var type = channel.type && channel.type.value ? channel.type.value : channel.type || 'IP';
-                    var row = makeItem(titleOf(channel), 'kslm__channel', function () { playChannel(channel); }, imageOf(channel));
-                    row.attr('title', titleOf(channel));
-                    row.data('asset-id', idOf(channel));
-                    row.append($('<span class="kslm__hint"></span>').text('▶'));
-                    channelsRoot.append(row);
-                });
+        Lampa.Select.show({
+            title: TITLE + ' — Канали',
+            items: items.map(function (ch) {
+                return {
+                    title: ch.title + (ch.locked ? ' 🔒' : ''),
+                    subtitle: ch.videoType === 'VIRTUAL' ? 'VIRTUAL' : 'IP',
+                    image: ch.image,
+                    onSelect: function () {
+                        if (ch.locked) { notify('Канал не доступний'); return; }
+                        playItem(api, ch);
+                    }
+                };
+            }),
+            onBack: function () {
                 if (Lampa.Controller && Lampa.Controller.toggle) Lampa.Controller.toggle('content');
-            }).catch(function (err) {
-                if (token !== generation) return;
-                channelsRoot.empty().append($('<div class="kslm__message"></div>').text('Не вдалося завантажити канали: ' + (err.message || err)));
-            });
-        }
-
-        function buildGroups(items) {
-            groupsRoot.empty();
-            if (!items.length) {
-                groupsRoot.append($('<div class="kslm__message"></div>').text('API не повернув категорій Live TV.'));
-                return;
             }
-            items.forEach(function (group, index) {
-                var gid = idOf(group);
-                if (!gid) return;
-                var row = makeItem(titleOf(group), '', function () { showChannels(group); });
-                row.attr('data-group', gid);
-                groupsRoot.append(row);
-                if (!selectedGroup && index === 0) selectedGroup = group;
-            });
-            if (selectedGroup) showChannels(selectedGroup);
-        }
-
-        Lampa.Component.add(componentName, function () {
-            this.create = function () { this.render = function () { return page[0]; }; };
-            this.render = function () { return page[0]; };
-            this.start = function () {};
-            this.back = function () { if (Lampa.Activity && Lampa.Activity.backward) Lampa.Activity.backward(); };
-            this.destroy = function () { active = false; };
-        });
-        currentComponent = componentName;
-        Lampa.Activity.push({ title: TITLE, component: componentName });
-        setTimeout(function () {
-            var activity = document.querySelector('.activity__body');
-            if (activity && !page[0].parentNode) activity.append(page[0]);
-        }, 100);
-        groups().then(buildGroups).catch(function (err) {
-            groupsRoot.empty();
-            channelsRoot.empty();
-            groupsRoot.append($('<div class="kslm__message"></div>').text('Не вдалося завантажити категорії.'));
-            channelsRoot.append($('<div class="kslm__message"></div>').text((err.message || err) + '\nЯкщо сесія протермінована, відкрий Kyivstar TV → Налаштування → Оновити сесію.'));
         });
     }
 
-    function addMenuEntry() {
-        if (!window.$ || !Lampa || !Lampa.Storage) { setTimeout(addMenuEntry, 500); return; }
+    // ---------- Side menu ----------
+    function addSideMenuEntry() {
         var list = $('.menu .menu__list').eq(0);
-        if (!list.length) { setTimeout(addMenuEntry, 500); return; }
-        if (list.find('[data-action="kyivstar-tv-left-menu"]').length) return;
-        var item = $('<li class="menu__item selector" data-action="kyivstar-tv-left-menu"><div class="menu__ico">📺</div><div class="menu__text">Kyivstar TV — канали</div></li>');
-        item.on('hover:enter click', openScreen);
-        list.append(item);
-    }
+        if (!list.length) { setTimeout(addSideMenuEntry, 500); return; }
+        if ($('.menu__item[data-action="kyivstar-tv"]').length) return;
 
-    function boot() {
-        if (!window.Lampa || !window.$) { setTimeout(boot, 500); return; }
-        if (window.__kyivstar_tv_left_menu_loaded) return;
-        window.__kyivstar_tv_left_menu_loaded = true;
-        if (window.appready) addMenuEntry();
-        else if (Lampa.Listener && Lampa.Listener.follow) Lampa.Listener.follow('app', function (event) {
-            if (event.type === 'ready') addMenuEntry();
+        var item = $('<li class="menu__item selector" data-action="kyivstar-tv">' +
+            '<div class="menu__ico">📺</div>' +
+            '<div class="menu__text">' + TITLE + '</div>' +
+            '</li>');
+
+        item.on('hover:enter click', function () {
+            var api = new KyivstarApi();
+            loadAllChannels(api, function (channels) {
+                showChannels(api, channels);
+            });
         });
-        setTimeout(addMenuEntry, 1000);
+
+        list.append(item);
+        log('menu entry added');
     }
 
-    boot();
+    // ---------- Lampa component registration ----------
+    var plugin = {
+        get: function (params, oncomplete, onerror) {
+            var api = new KyivstarApi();
+            loadAllChannels(api, function (channels) {
+                var items = channels.map(function (ch) {
+                    return {
+                        title: ch.title + (ch.locked ? ' 🔒' : ''),
+                        subtitle: ch.videoType,
+                        image: ch.image,
+                        assetId: ch.assetId,
+                        videoType: ch.videoType,
+                        locked: ch.locked,
+                        type: ch.locked ? 'nav' : 'vod',
+                        url: ch.locked ? '' : 'plugin://' + COMPONENT + '/play/' + ch.assetId
+                    };
+                });
+                oncomplete(items);
+            });
+        },
+        stream: function (params, oncomplete, onerror) {
+            var api = new KyivstarApi();
+            var item = allChannels && allChannels.find ?
+                allChannels.find(function (c) { return c.assetId === params.assetId || c.id === params.assetId; }) :
+                params;
+            playItem(api, item);
+            oncomplete('');
+        }
+    };
+
+    if (Lampa.Component && Lampa.Component.add) {
+        Lampa.Component.add(COMPONENT, {
+            name: TITLE,
+            source: COMPONENT,
+            get: plugin.get,
+            stream: plugin.stream
+        });
+    }
+
+    if (Lampa.Listener && Lampa.Listener.follow) {
+        Lampa.Listener.follow('sources', function (e) {
+            if (e.type === 'start' && e.object && e.object.sources) {
+                var exists = e.object.sources.find(function (s) { return s.id === COMPONENT; });
+                if (!exists) {
+                    e.object.sources.push({
+                        id: COMPONENT,
+                        title: TITLE,
+                        icon: 'https://dxnsav.github.io/plugin.video.kyivstar.tv/plugin.kyivstar.tv/assets/favicon.ico',
+                        action: function () {
+                            showChannels(new KyivstarApi(), allChannels);
+                        }
+                    });
+                    Lampa.Listener.send('sources_update');
+                }
+            }
+        });
+    }
+
+    // ---------- Boot ----------
+    function boot() {
+        if (!window.Lampa || !window.$ || !Lampa.Storage) {
+            setTimeout(boot, 200);
+            return;
+        }
+        if (window[PLUGIN_FLAG]) return;
+        window[PLUGIN_FLAG] = true;
+
+        ensureDeviceId();
+        addSideMenuEntry();
+
+        if (window.appready) {
+            log('loaded via appready');
+        } else if (Lampa.Listener && Lampa.Listener.follow) {
+            Lampa.Listener.follow('app', function (event) {
+                if (event.type === 'ready') {
+                    addSideMenuEntry();
+                    log('loaded via listener');
+                }
+            });
+        }
+    }
+
+    if (window.appready) boot();
+    else if (Lampa.Listener && Lampa.Listener.follow) {
+        Lampa.Listener.follow('app', function (event) {
+            if (event.type === 'ready') boot();
+        });
+    }
+
 })();
