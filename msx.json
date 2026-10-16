@@ -1,0 +1,10 @@
+{
+  "id": "kyivstar.tv",
+  "name": "Kyivstar TV (LAMPA)",
+  "version": "0.1.0",
+  "author": "rebik111",
+  "description": "Kyivstar TV plugin ported to LAMPA (work in progress)",
+  "type": "source",
+  "icon": "https://dxnsav.github.io/plugin.video.kyivstar.tv/plugin.kyivstar.tv/assets/favicon.ico",
+  "endpoint": "https://raw.githubusercontent.com/rebik111/111qqq/lampa-port/src/plugin.js"
+}
