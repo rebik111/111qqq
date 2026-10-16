@@ -1,0 +1,14 @@
+{
+  "name": "kyivstar-cors-proxy",
+  "version": "1.0.0",
+  "description": "Local CORS proxy for Kyivstar TV plugin (binds to localhost)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7",
+    "express-rate-limit": "^6.7.0"
+  }
+}
