@@ -1,674 +1,457 @@
 (function () {
     'use strict';
 
-    /* ═════════════════════════════════════════════════════════════════
-       KYIVSTAR TV — сумісна версія для Lampa / MSX
-       ════════════════════════════════════════════════════════════════ */
+    if (window.kyivstar_lampa_plugin) return;
+    window.kyivstar_lampa_plugin = true;
 
-    var I18N = {
-        "uk": {
-            "title": "Kyivstar TV",
-            "live_tv": "Живе ТБ",
-            "channels": "Канали",
-            "epg": "Теlepередачі",
-            "settings": "Налаштування",
-            "login_type": "Тип входу",
-            "anonymous": "Анонімно",
-            "account": "Особистий рахунок",
-            "phone_otp": "Телефонний OTP",
-            "phone": "Номер телефону",
-            "password": "Пароль",
-            "sms_code": "SMS-код",
-            "refresh_session": "Оновити сесію",
-            "send_sms": "Надіслати SMS",
-            "logout": "Вийти",
-            "loading": "Завантаження каналів...",
-            "error": "Помилка завантаження",
-            "no_channels": "Канали не знайдені",
-            "play": "Відтворити",
-            "stream_error": "Не вдалося отримати потік"
-        },
-        "ru": {
-            "title": "Kyivstar TV",
-            "live_tv": "Живое ТВ",
-            "channels": "Каналы",
-            "epg": "Телепередачи",
-            "settings": "Настройки",
-            "login_type": "Тип входа",
-            "anonymous": "Анонимно",
-            "account": "Лицевой счет",
-            "phone_otp": "Телефонный OTP",
-            "phone": "Номер телефона",
-            "password": "Пароль",
-            "sms_code": "SMS-код",
-            "refresh_session": "Обновить сессию",
-            "send_sms": "Отправить SMS",
-            "logout": "Выйти",
-            "loading": "Загрузка каналов...",
-            "error": "Ошибка загрузки",
-            "no_channels": "Каналы не найдены",
-            "play": "Воспроизвести",
-            "stream_error": "Не удалось получить поток"
-        },
-        "en": {
-            "title": "Kyivstar TV",
-            "live_tv": "Live TV",
-            "channels": "Channels",
-            "epg": "TV Guide",
-            "settings": "Settings",
-            "login_type": "Login type",
-            "anonymous": "Anonymous",
-            "account": "Personal account",
-            "phone_otp": "Phone OTP",
-            "phone": "Phone number",
-            "password": "Password",
-            "sms_code": "SMS code",
-            "refresh_session": "Refresh session",
-            "send_sms": "Send SMS",
-            "logout": "Logout",
-            "loading": "Loading channels...",
-            "error": "Loading error",
-            "no_channels": "No channels found",
-            "play": "Play",
-            "stream_error": "Failed to load stream"
+    var API = 'https://clients.production.vidmind.com/vidmind-stb-ws/';
+    var AUTH = 'https://kyivstar-auth.production.vidmind.com/kyivstar-auth/';
+    var STORE = 'kyivstar_lampa_session_v1';
+    var DEVICE = 'kyivstar_lampa_device_v1';
+    var session = null;
+    var deviceId = '';
+
+    function notify(message) {
+        if (window.Lampa && Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message);
+        else window.alert(message);
+    }
+
+    function getSaved(key) {
+        try {
+            if (window.Lampa && Lampa.Storage) return Lampa.Storage.get(key, '');
+            return localStorage.getItem(key) || '';
+        } catch (e) { return ''; }
+    }
+
+    function setSaved(key, value) {
+        try {
+            if (window.Lampa && Lampa.Storage) Lampa.Storage.set(key, value);
+            else localStorage.setItem(key, value);
+        } catch (e) {}
+    }
+
+    function removeSaved(key) {
+        try {
+            if (window.Lampa && Lampa.Storage) Lampa.Storage.set(key, '');
+            else localStorage.removeItem(key);
+        } catch (e) {}
+    }
+
+    function loadSession() {
+        try { session = JSON.parse(getSaved(STORE) || 'null'); }
+        catch (e) { session = null; }
+        deviceId = getSaved(DEVICE);
+        if (!deviceId) {
+            deviceId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                var r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+            });
+            setSaved(DEVICE, deviceId);
         }
-    };
-
-    /* ══════════════════════════════════════════════════════════════════
-       КОНСТАНТИ
-       ═════════════════════════════════════════════════════════════════ */
-    var PLUGIN_BUILD = '2026-06-10-compatible';
-    var PLUGIN_FLAG = '__kyivstar_tv_loaded_' + PLUGIN_BUILD;
-    var COMPONENT = 'kyivstar_tv';
-    var TITLE = 'Kyivstar TV';
-    var API_BASE = 'https://clients.production.vidmind.com/vidmind-stb-ws/';
-    var AUTH_REALM = '557455cfe4b04ad886a6ae41';
-    var DEFAULT_LOCALE = 'uk_UA';
-    var USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0';
-    var REFERER = 'https://tv.kyivstar.ua/';
-    var LIMIT = 50;
-
-    var KEYS = {
-        loginType: 'kyivstar_login_type',
-        username: 'kyivstar_username',
-        password: 'kyivstar_password',
-        phone: 'kyivstar_phone',
-        otp: 'kyivstar_otp',
-        locale: 'kyivstar_locale',
-        deviceId: 'kyivstar_device_id',
-        session: 'kyivstar_session'
-    };
-
-    var DEFAULTS = {};
-    DEFAULTS[KEYS.loginType] = 'anonymous';
-    DEFAULTS[KEYS.username] = '';
-    DEFAULTS[KEYS.password] = '';
-    DEFAULTS[KEYS.phone] = '';
-    DEFAULTS[KEYS.otp] = '';
-    DEFAULTS[KEYS.locale] = DEFAULT_LOCALE;
-    DEFAULTS[KEYS.deviceId] = '';
-    DEFAULTS[KEYS.session] = null;
-
-    /* ══════════════════════════════════════════════════════════════════
-       ДОПОМІЖНІ ФУНКЦІЇ
-       ═════════════════════════════════════════════════════════════════ */
-    function t(key) {
-        var lang = DEFAULTS[KEYS.locale];
-        if (Lampa.Storage) {
-            try { lang = Lampa.Storage.get(KEYS.locale, DEFAULT_LOCALE); } catch(e) {}
-        }
-        var dict = I18N[lang] || I18N.uk;
-        return dict[key] || key;
     }
 
-    function setting(name) {
-        if (!Lampa.Storage) return DEFAULTS[name];
-        try { return Lampa.Storage.get(name, DEFAULTS[name]); } catch(e) { return DEFAULTS[name]; }
-    }
-    function saveSetting(name, value) {
-        if (!Lampa.Storage) return;
-        try { Lampa.Storage.set(name, value); } catch(e) {}
+    function saveSession(profile) {
+        session = profile;
+        setSaved(STORE, JSON.stringify(profile));
     }
 
-    function log(msg) {
-        try { console.log('[KyivstarTV] ' + msg); } catch(e) {}
-    }
-    function notify(msg) {
-        if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(msg);
-        else log(msg);
-    }
-
-    function uuid() {
-        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            var r = Math.random()*16|0, v = c==='x' ? r : (r&0x3|0x8);
-            return v.toString(16);
-        });
-    }
-
-    function ensureDeviceId() {
-        if (!setting(KEYS.deviceId)) saveSetting(KEYS.deviceId, uuid());
-    }
-
-    /* ══════════════════════════════════════════════════════════════════
-       KYIVSTAR API
-       ═════════════════════════════════════════════════════════════════ */
-    function KyivstarApi() {
-        this.network = Lampa.Reguest ? new Lampa.Reguest() : null;
-    }
-
-    KyivstarApi.prototype.headers = function() {
-        return {
-            'x-vidmind-device-id': setting(KEYS.deviceId),
+    function request(url, options) {
+        options = options || {};
+        options.credentials = 'include';
+        options.headers = Object.assign({
+            'x-vidmind-device-id': deviceId,
             'x-vidmind-device-type': 'WEB',
-            'x-vidmind-image-sizes': '2_3_XL,16_9_XL,16_9_L,1_1_XL',
-            'x-vidmind-locale': setting(KEYS.locale),
+            'x-vidmind-locale': 'uk_UA',
             'Origin': 'https://tv.kyivstar.ua',
             'Referer': 'https://tv.kyivstar.ua/'
-        };
-    };
-
-    KyivstarApi.prototype.request = function(path, options) {
-        var self = this;
-        var retries = options && options.retries !== undefined ? options.retries : 2;
-        var opts = Object.assign({ headers: this.headers() }, options || {});
-
-        function run(attempt) {
-            return transport(self.network, self.url(path), opts).catch(function(err) {
-                if (err.status === 429 && attempt < retries) {
-                    return new Promise(function(res){ setTimeout(res, 10000); }).then(function(){ return run(attempt+1); });
+        }, options.headers || {});
+        return fetch(url, options).then(function (response) {
+            return response.text().then(function (body) {
+                var data;
+                try { data = JSON.parse(body); } catch (e) { data = body; }
+                if (!response.ok) {
+                    var error = new Error('HTTP ' + response.status);
+                    error.data = data;
+                    throw error;
                 }
-                throw err;
-            });
-        }
-        return run(0);
-    };
-
-    KyivstarApi.prototype.url = function(path) {
-        return API_BASE + path;
-    };
-
-    KyivstarApi.prototype.withSession = function(handler) {
-        var self = this;
-        return this.ensureSession(false).then(function(session){
-            return Promise.resolve(handler(session)).catch(function(err){
-                if (err.status === 401) {
-                    return self.ensureSession(true).then(function(newSession){ return handler(newSession); });
-                }
-                throw err;
+                return data;
             });
         });
-    };
+    }
 
-    KyivstarApi.prototype.ensureSession = function(force) {
-        var current = setting(KEYS.session);
-        if (!force && current && current.sessionId && current.userId) return Promise.resolve(current);
-
-        var loginType = setting(KEYS.loginType);
-        var p;
-        if (loginType === 'account') p = this.loginAccount();
-        else if (loginType === 'phone') p = this.loginPhone();
-        else p = this.loginAnonymous();
-
-        return p.then(function(profile){
-            if (!profile || !profile.userId || !profile.sessionId) throw new Error(t('error'));
-            saveSetting(KEYS.session, { userId: profile.userId, sessionId: profile.sessionId });
-            return setting(KEYS.session);
-        });
-    };
-
-    KyivstarApi.prototype.loginAnonymous = function() {
-        return this.request('authentication/login', {
+    function postForm(url, data) {
+        var body = Object.keys(data).map(function (key) {
+            return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
+        }).join('&');
+        return request(url, {
             method: 'POST',
-            form: { username: AUTH_REALM + '\\anonymous', password: 'anonymous' }
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: body
         });
-    };
+    }
 
-    KyivstarApi.prototype.loginAccount = function() {
-        var self = this;
-        var username = setting(KEYS.username);
-        var password = setting(KEYS.password);
-        if (!username || !password) return Promise.reject(new Error(t('error')));
-        return this.loginAnonymous().then(function(anon){
-            return self.request('authentication/login/v3;jsessionid=' + encodeURIComponent(anon.sessionId), {
-                method: 'POST',
-                form: { username: AUTH_REALM + '\\' + username, password: password }
-            });
+    function authStart() {
+        return postForm(API + 'authentication/login', {
+            username: '557455cfe4b04ad886a6ae41\\anonymous',
+            password: 'anonymous'
         });
-    };
+    }
 
-    KyivstarApi.prototype.loginPhone = function() {
-        var self = this;
-        var phone = String(setting(KEYS.phone) || '').replace(/\D/g, '');
-        var otp = setting(KEYS.otp);
-        if (!phone) return Promise.reject(new Error(t('error')));
-        return this.ensurePhonePendingSession().then(function(sess){
-            if (!otp) {
-                return self.sendOtp(sess.sessionId, phone).then(function(){
-                    throw new Error('SMS sent');
-                });
-            }
-            return self.request('authentication/login/v3;jsessionid=' + encodeURIComponent(sess.sessionId), {
-                method: 'POST',
-                form: { username: AUTH_REALM + '\\' + phone, otp: otp }
-            });
-        });
-    };
-
-    KyivstarApi.prototype.ensurePhonePendingSession = function() {
-        var pending = setting(KEYS.pendingPhoneSession) || null;
-        if (pending && pending.sessionId) return Promise.resolve(pending);
-        return this.loginAnonymous().then(function(anon){
-            saveSetting(KEYS.pendingPhoneSession, anon);
-            return anon;
-        });
-    };
-
-    KyivstarApi.prototype.sendOtp = function(sessionId, phone) {
-        return this.request('v2/otp;jsessionid=' + encodeURIComponent(sessionId), {
+    function loginPhone(phone, otp, initialSessionId) {
+        return request(API + 'authentication/login/v3;jsessionid=' + encodeURIComponent(initialSessionId), {
             method: 'POST',
-            json: { phoneNumber: phone, language: 'UK', channel: 'sms' },
-            dataType: 'text'
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: 'username=' + encodeURIComponent('557455cfe4b04ad886a6ae41\\' + phone) +
+                  '&otp=' + encodeURIComponent(otp)
         });
-    };
+    }
 
-    KyivstarApi.prototype.logout = function() {
-        var session = setting(KEYS.session);
-        saveSetting(KEYS.session, null);
-        if (session && session.userId && session.userId !== 'anonymous') {
-            return this.request('authentication/logout;jsessionid=' + encodeURIComponent(session.sessionId) + '?sessionExpired=false', { dataType: 'text' }).catch(function(){});
+    function sendOtp(phone, initialSessionId) {
+        return request(API + 'v2/otp;jsessionid=' + encodeURIComponent(initialSessionId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, language: 'UK', channel: 'sms' })
+        });
+    }
+
+    function loginAccount(username, password, initialSessionId) {
+        return request(API + 'authentication/login/v3;jsessionid=' + encodeURIComponent(initialSessionId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: 'username=' + encodeURIComponent('557455cfe4b04ad886a6ae41\\' + username) +
+                  '&password=' + encodeURIComponent(password)
+        });
+    }
+
+    function logout() {
+        var old = session;
+        session = null;
+        removeSaved(STORE);
+        if (old && old.sessionId) {
+            request(API + 'authentication/logout;jsessionid=' + encodeURIComponent(old.sessionId) + '?sessionExpired=false', { method: 'POST' })
+                .catch(function () {});
         }
-        return Promise.resolve();
-    };
+        notify('Київстар ТБ: локальну сесію очищено');
+        openHome();
+    }
 
-    KyivstarApi.prototype.getLiveChannelGroups = function() {
-        var self = this;
-        return this.withSession(function(session){
-            return self.request('v1/contentareas/LIVE_CHANNELS;jsessionid=' + encodeURIComponent(session.sessionId) + '?includeRestricted=true&limit=100');
+    function el(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    function styleOnce() {
+        if (document.getElementById('ks-lampa-style')) return;
+        var style = el('style');
+        style.id = 'ks-lampa-style';
+        style.textContent = [
+            '.ks-page{padding:2em;color:#fff;box-sizing:border-box}',
+            '.ks-title{font-size:2em;margin-bottom:1em}',
+            '.ks-note{opacity:.8;max-width:60em;line-height:1.5;margin:.5em 0 1.2em}',
+            '.ks-actions{display:flex;flex-direction:column;gap:.7em;max-width:42em}',
+            '.ks-btn{padding:.9em 1.1em;background:rgba(255,255,255,.12);border-radius:.3em;font-size:1.15em;cursor:pointer}',
+            '.ks-btn:focus,.ks-btn:hover{outline:2px solid #fff;background:rgba(255,255,255,.25)}',
+            '.ks-field{box-sizing:border-box;width:100%;padding:.8em;font-size:1.1em;margin:.3em 0 1em}',
+            '.ks-channel{display:flex;align-items:center;gap:1em;padding:.7em;border-bottom:1px solid #ffffff25;cursor:pointer}',
+            '.ks-channel:focus,.ks-channel:hover{outline:2px solid #fff;background:#ffffff20}',
+            '.ks-channel img{width:5em;height:3em;object-fit:contain}',
+            '.ks-error{color:#ffb5b5;white-space:pre-wrap}'
+        ].join('');
+        document.head.appendChild(style);
+    }
+
+    function openHome() {
+        var root = el('div', 'ks-page');
+        root.appendChild(el('div', 'ks-title', 'Київстар ТБ'));
+        root.appendChild(el('div', 'ks-note',
+            'Експериментальний порт для Lampa/MSX. Потрібне підключення до API та перевірка відтворення на Titan OS.'));
+        var actions = el('div', 'ks-actions');
+        root.appendChild(actions);
+        if (session && session.sessionId && session.userId) {
+            actions.appendChild(button('Телеканали та категорії', function () { loadChannels(root); }));
+            actions.appendChild(button('Оновити / перевірити сесію', function () { request(API + 'api/v1/subscribers;jsessionid=' + encodeURIComponent(session.sessionId)).then(function(){notify('Сесія активна');}).catch(function(e){notify('Сесія недоступна: ' + (e.message || e));}); }));
+            actions.appendChild(button('Вийти з акаунта', logout));
+            actions.appendChild(el('div', 'ks-note', 'Сесія збережена локально на цьому пристрої.'));
+        } else {
+            actions.appendChild(button('Увійти за номером телефону (SMS)', function () { phoneLogin(root); }));
+            actions.appendChild(button('Увійти за особовим рахунком', function () { accountLogin(root); }));
+            actions.appendChild(button('Анонімний вхід', function () { anonymousLogin(root); }));
+            actions.appendChild(button('QR-вхід', function () { qrLogin(root); }));
+        }
+        showPage(root, 'Київстар ТБ');
+    }
+
+    function button(label, action) {
+        var b = el('div', 'ks-btn', label);
+        b.tabIndex = 0;
+        b.setAttribute('role', 'button');
+        b.addEventListener('click', action);
+        b.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); action(); }
         });
-    };
+        return b;
+    }
 
-    KyivstarApi.prototype.getGroupElements = function(groupId) {
-        var self = this;
-        return this.withSession(function(session){
-            return self.request('gallery/contentgroups/' + encodeURIComponent(groupId) + ';jsessionid=' + encodeURIComponent(session.sessionId) + '?offset=0&limit=500');
-        });
-    };
+    function field(parent, label, type, value) {
+        parent.appendChild(el('label', 'ks-note', label));
+        var input = el('input', 'ks-field');
+        input.type = type || 'text';
+        input.value = value || '';
+        input.autocomplete = 'off';
+        parent.appendChild(input);
+        return input;
+    }
 
-    KyivstarApi.prototype.getStreamUrl = function(assetId, videoType) {
-        var self = this;
-        return this.withSession(function(session){
-            var version = session.userId === 'anonymous' ? '4' : '2';
-            var path = 'play/v' + version + ';jsessionid=' + encodeURIComponent(session.sessionId) + '?assetId=' + encodeURIComponent(assetId);
-            if (videoType === 'VIRTUAL') path += '&date=-1000';
-            return self.request(path, { retries: 0 }).then(function(data){
-                if (data && data.error) throw new Error(data.description || data.error);
-                if (videoType === 'VIRTUAL' && data && data.media && data.media[0] && data.media[0].url) return { url: data.media[0].url };
-                if (videoType !== 'VIRTUAL' && data && data.liveChannelUrl) return { url: data.liveChannelUrl };
-                throw new Error(t('stream_error'));
+    function showPage(node, title) {
+        styleOnce();
+        if (window.Lampa && Lampa.Activity && Lampa.Activity.push) {
+            var name = 'kyivstar_lampa_page';
+            Lampa.Component.add(name, function (object) {
+                this.create = function () { this.render = function () { return node; }; };
+                this.render = function () { return node; };
+                this.start = function () {};
+                this.back = function () {};
+                this.destroy = function () {};
             });
-        });
-    };
-
-    KyivstarApi.prototype.cached = function(name, ttl, loader) {
-        var key = 'kyivstar_cache_' + name;
-        var cached = Lampa.Storage ? Lampa.Storage.get(key, null) : null;
-        var now = Date.now();
-        if (cached && cached.time && now - cached.time < ttl) return Promise.resolve(cached.value);
-        return Promise.resolve(loader()).then(function(value){
-            if (Lampa.Storage) Lampa.Storage.set(key, { time: now, value: value });
-            return value;
-        });
-    };
-
-    /* Транспорт: підтримка Lampa.Reguest і fetch */
-    function transport(network, url, opts) {
-        opts = opts || {};
-        var method = opts.method || 'GET';
-        var headers = Object.assign({}, opts.headers || {});
-        var postData = false;
-        if (opts.json !== undefined) {
-            postData = JSON.stringify(opts.json);
-            headers['Content-Type'] = 'application/json';
-        } else if (opts.form) {
-            postData = opts.form;
+            Lampa.Activity.push({ title: title || 'Київстар ТБ', component: name });
+            setTimeout(function () {
+                var activity = document.querySelector('.activity__body');
+                if (activity && !node.parentNode) activity.appendChild(node);
+            }, 200);
+        } else {
+            document.body.appendChild(node);
         }
-        return new Promise(function(resolve, reject){
-            var ok = function(data){
-                if (opts.dataType === 'json' && typeof data === 'string') {
-                    try { resolve(JSON.parse(data)); return; } catch(e){ reject(e); return; }
-                }
-                resolve(data);
-            };
-            var fail = function(err){
-                var norm = new Error('Network failed');
-                if (err) {
-                    norm.status = err.status || err.decode_code;
-                    norm.body = err.responseJSON || err.responseText;
-                    if (err.decode_error) norm.message = err.decode_error;
-                    else if (err.responseJSON && err.responseJSON.description) norm.message = err.responseJSON.description;
-                    else if (err.responseText) norm.message = err.responseText;
-                    else if (err.status) norm.message = 'HTTP ' + err.status;
-                }
-                reject(norm);
-            };
-            if (network && (network.native || network.silent)) {
-                var m = network.native ? 'native' : 'silent';
-                network.timeout(20000);
-                network[m](url, ok, fail, postData, { type: method, headers: headers, dataType: opts.dataType || 'json', timeout: 20000 });
-                return;
-            }
-            fetch(url, { method: method, headers: headers, body: postData })
-                .then(function(r){
-                    if (!r.ok) {
-                        var err = new Error('HTTP ' + r.status);
-                        err.status = r.status;
-                        return r.text().then(function(txt){
-                            try { err.body = JSON.parse(txt); } catch(e){ err.body = txt; }
-                            throw err;
-                        });
-                    }
-                    if (opts.dataType === 'text') return r.text();
-                    return r.json();
-                }).then(ok).catch(fail);
-        });
     }
 
-    /* ══════════════════════════════════════════════════════════════════
-       ЗАВАНТАЖЕННЯ КАНАЛІВ
-       ═════════════════════════════════════════════════════════════════ */
-    var allChannels = [];
-
-    function mapChannel(ch) {
-        var images = ch.images || [];
-        var logo = images.length ? (images[0].url || '') : '';
-        var type = ch.type || {};
-        var typeValue = type && type.value ? type.value : type;
-        var purchased = ch.purchased !== false;
-        var catchup = ch.catchupEnabled === true;
-        return {
-            id: ch.assetId,
-            title: ch.name || ch.displayName || 'Channel',
-            image: logo,
-            assetId: ch.assetId,
-            videoType: typeValue === 'VIRTUAL' ? 'VIRTUAL' : 'IP',
-            locked: !purchased,
-            catchup: catchup,
-            raw: ch
-        };
+    function showError(root, error) {
+        var msg = error && error.message ? error.message : String(error);
+        root.appendChild(el('div', 'ks-error',
+            'Не вдалося звернутися до API: ' + msg +
+            '\nЯкщо браузер повідомляє Failed to fetch, найімовірніше запит блокує CORS. У такому разі потрібен контрольований HTTPS-проксі або офіційний вебклієнт; обхід DRM не реалізується.'));
     }
 
-    function loadChannels(api, callback) {
-        notify(t('loading'));
-        api.getLiveChannelGroups().then(function(groups){
-            var all = [];
-            var pending = groups.length;
-            groups.forEach(function(g){
-                api.getGroupElements(g.assetId || g.id).then(function(channels){
-                    (channels || []).forEach(function(ch){
-                        if (ch.purchased === false) return;
-                        all.push(mapChannel(ch));
-                    });
-                    pending--;
-                    if (pending === 0) {
-                        allChannels = all;
-                        callback(all);
-                    }
-                }).catch(function(){
-                    pending--;
-                    if (pending === 0) callback(all);
+    function anonymousLogin(root) {
+        authStart().then(function (profile) {
+            if (!profile || !profile.sessionId || !profile.userId) throw new Error('API не повернув sessionId/userId');
+            saveSession(profile);
+            openHome();
+        }).catch(function (e) { showError(root, e); });
+    }
+
+    function phoneLogin(root) {
+        var page = el('div', 'ks-page');
+        page.appendChild(el('div', 'ks-title', 'Вхід за номером телефону'));
+        var phone = field(page, 'Номер у форматі 380XXXXXXXXX', 'tel');
+        var otp = field(page, 'SMS-код (спочатку залиш порожнім)', 'text');
+        var status = el('div', 'ks-note');
+        page.appendChild(status);
+        page.appendChild(button('Надіслати SMS-код', function () {
+            var value = phone.value.replace(/[^\d]/g, '');
+            if (!/^380\d{9}$/.test(value)) { status.textContent = 'Введи номер у форматі 380XXXXXXXXX'; return; }
+            status.textContent = 'Запит коду…';
+            authStart().then(function (p) {
+                if (!p || !p.sessionId) throw new Error('Немає sessionId');
+                return sendOtp(value, p.sessionId).then(function () {
+                    status.textContent = 'Код надіслано. Введи його нижче й натисни «Підтвердити».';
+                    page.dataset.sessionId = p.sessionId;
                 });
-            });
-        }).catch(function(err){
-            notify(err.message || t('error'));
-            callback([]);
-        });
+            }).catch(function (e) { showError(page, e); });
+        }));
+        page.appendChild(button('Підтвердити код', function () {
+            if (!page.dataset.sessionId || !otp.value.trim()) { status.textContent = 'Спочатку запроси SMS і введи код.'; return; }
+            loginPhone(phone.value.replace(/[^\d]/g, ''), otp.value.trim(), page.dataset.sessionId)
+                .then(function (p) {
+                    if (!p || !p.sessionId || !p.userId) throw new Error('Вхід не підтверджено API');
+                    saveSession(p); openHome();
+                }).catch(function (e) { showError(page, e); });
+        }));
+        page.appendChild(button('Назад', openHome));
+        showPage(page, 'Вхід — Київстар ТБ');
     }
 
-    /* ══════════════════════════════════════════════════════════════════
-       ВІДТВОРЕННЯ
-       ═════════════════════════════════════════════════════════════════ */
-    function playChannel(api, item) {
-        notify(t('play'));
-        api.getStreamUrl(item.assetId, item.videoType).then(function(stream){
-            var url = stream.url;
-            // Додаємо заголовки для потоку (як у оригінальному плагіні)
-            url += '|User-Agent="' + encodeURIComponent(USER_AGENT) + '"&Referer="' + encodeURIComponent(REFERER) + '"';
-            if (Lampa.Player && Lampa.Player.play) {
-                Lampa.Player.play({
-                    title: item.title,
-                    url: url,
-                    poster: item.image || '',
-                    timeline: false
+    function accountLogin(root) {
+        var page = el('div', 'ks-page');
+        page.appendChild(el('div', 'ks-title', 'Вхід за особовим рахунком'));
+        var username = field(page, 'Номер особового рахунку', 'text');
+        var password = field(page, 'Пароль', 'password');
+        page.appendChild(button('Увійти', function () {
+            authStart().then(function (p) {
+                if (!p || !p.sessionId) throw new Error('Немає sessionId');
+                return loginAccount(username.value.trim(), password.value, p.sessionId);
+            }).then(function (p) {
+                if (!p || !p.sessionId || !p.userId) throw new Error('Вхід не підтверджено API');
+                saveSession(p); openHome();
+            }).catch(function (e) { showError(page, e); });
+        }));
+        page.appendChild(button('Назад', openHome));
+        showPage(page, 'Вхід — Київстар ТБ');
+    }
+
+    function qrLogin(root) {
+        var page = el('div', 'ks-page');
+        page.appendChild(el('div', 'ks-title', 'QR-підключення'));
+        page.appendChild(el('div', 'ks-note', 'QR-вхід потребує згенерованого коду та перевірки статусу підписки. У цьому прототипі цей сценарій ще не реалізований.'));
+        page.appendChild(button('Назад', openHome));
+        showPage(page, 'QR-вхід — Київстар ТБ');
+    }
+
+    function loadChannels(root) {
+        var page = el('div', 'ks-page');
+        page.appendChild(el('div', 'ks-title', 'Телеканали'));
+        page.appendChild(el('div', 'ks-note', 'Завантаження…'));
+        showPage(page, 'Київстар ТБ — канали');
+        request(API + 'contentareas;jsessionid=' + encodeURIComponent(session.sessionId))
+            .then(function (groups) { openCategories(page, groups); })
+            .catch(function (e) { showError(page, e); });
+    }
+
+    function loadGroup(page, group) {
+        var id = group.id || group.assetId || group.contentGroupId;
+        if (!id) { showError(page, new Error('У відповіді групи не знайдено ID')); return; }
+        page.innerHTML = '';
+        page.appendChild(el('div', 'ks-title', group.title || group.name || 'Канали'));
+        request(API + 'gallery/filters/content-area;jsessionid=' + encodeURIComponent(session.sessionId), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({compilationElementId:id,filterElementIds:[],filterSortElementId:null,offset:0,limit:500,sortOrder:null})})
+            .then(function (data) {
+                var channels = Array.isArray(data) ? data : (data && (data.elements || data.items || data.content) || []);
+                if (!channels.length) {
+                    page.appendChild(el('div', 'ks-note', 'Не знайдено каналів у відповіді API.'));
+                    return;
+                }
+                channels.forEach(function (channel) {
+                    page.appendChild(button((channel.title || channel.name || channel.label || channel.assetId || 'Канал') + ' — дивитися', function () { playChannel(channel); }));
+                    page.appendChild(button('Телепрограма / записи: ' + (channel.title || channel.name || 'канал'), function () { openEpg(channel); }));
                 });
-            } else {
-                notify('Lampa.Player не доступний');
-            }
-        }).catch(function(err){
-            notify(err.message || t('stream_error'));
-        });
+                page.appendChild(button('Назад до груп', loadChannels));
+            }).catch(function (e) { showError(page, e); });
     }
 
-    /* ══════════════════════════════════════════════════════════════════
-       БІЧНЕ МЕНЮ (без jQuery)
-       ═════════════════════════════════════════════════════════════════ */
-    function addSideMenuItem() {
-        // Спробуємо знайти контейнер бічного меню
-        var menu = null;
-        var selectors = [
-            '.menu .menu__list',
-            '.sidebar .menu__list',
-            'nav .menu__list',
-            '.menu__list'
-        ];
-        for (var i = 0; i < selectors.length; i++) {
-            var el = document.querySelector(selectors[i]);
-            if (el) { menu = el; break; }
-        }
-        if (!menu) {
-            setTimeout(addSideMenuItem, 500);
-            return;
-        }
-
-        // Унікальний ідентифікатор, щоб не додавати двічі
-        if (document.querySelector('.menu__item[data-action="kyivstar-tv"]')) return;
-
-        var item = document.createElement('li');
-        item.className = 'menu__item selector';
-        item.setAttribute('data-action', 'kyivstar-tv');
-        item.innerHTML = '<div class="menu__ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="18" height="13" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 21h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M9 9l5 3-5 3V9z" fill="currentColor"/></svg></div><div class="menu__text">' + TITLE + '</div>';
-
-        item.addEventListener('click', function(){
-            openKyivstarMenu();
-        });
-        item.addEventListener('hover:enter', function(){
-            openKyivstarMenu();
-        });
-
-        menu.appendChild(item);
-        log('Sidebar item added');
-    }
-
-    /* ══════════════════════════════════════════════════════════════════
-       ГОЛОВНЕ МЕНЮ КИЇВСТАР (Select)
-       ═════════════════════════════════════════════════════════════════ */
-    function openKyivstarMenu() {
-        if (!Lampa.Select || !Lampa.Select.show) {
-            notify('Lampa.Select не доступний');
-            return;
-        }
-        if (!Lampa.Activity || !Lampa.Activity.push) {
-            notify('Lampa.Activity не доступний');
-            return;
-        }
-
-        // Пуsh活 сторінку Kyivstar TV
-        Lampa.Activity.push({
-            title: TITLE,
-            component: 'kyivstar_main',
-            source: COMPONENT,
-            page: 1
-        });
-
-        // Завантажуємо канали асинхронно
-        var api = new KyivstarApi();
-        loadChannels(api, function(channels){
-            if (!channels.length) {
-                notify(t('no_channels'));
-                return;
-            }
-
-            var items = channels.map(function(ch){
-                return {
-                    title: ch.title + (ch.locked ? ' 🔒' : '') + (ch.catchup ? ' 📼' : ''),
-                    subtitle: ch.videoType,
-                    image: ch.image,
-                    assetId: ch.assetId,
-                    videoType: ch.videoType,
-                    locked: ch.locked,
-                    onSelect: function(){
-                        if (ch.locked) { notify('Канал недоступний без підписки'); return; }
-                        playChannel(api, ch);
-                    }
-                };
+    function openEpg(channel) {
+        var id = channel.id || channel.assetId || channel.asset_id;
+        if (!id) { notify('Не знайдено ID каналу'); return; }
+        var page = el('div', 'ks-page');
+        page.appendChild(el('div', 'ks-title', 'Телепрограма — ' + (channel.title || channel.name || 'Канал')));
+        page.appendChild(el('div', 'ks-note', 'Завантаження телепрограми…'));
+        showPage(page, 'Телепрограма');
+        var now = new Date();
+        function ymd(d) { return d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2); }
+        var from = new Date(now.getTime() - 3*86400000), to = new Date(now.getTime() + 3*86400000);
+        request(API + 'livechannels/' + encodeURIComponent(id) + '/epg;jsessionid=' + encodeURIComponent(session.sessionId) + '?from=' + ymd(from) + '&to=' + ymd(to))
+          .then(function(data) {
+            page.innerHTML = '';
+            page.appendChild(el('div','ks-title','Телепрограма — ' + (channel.title || channel.name || 'Канал')));
+            var days = Array.isArray(data) ? data : (data && (data.elements || data.items || data.content) || []);
+            var programs = [];
+            days.forEach(function(day){ (day.programList || day.programs || []).forEach(function(p){ programs.push(p); }); });
+            if (!programs.length) page.appendChild(el('div','ks-note','API не повернув передач. Перевір доступ каналу та формат відповіді.'));
+            programs.forEach(function(p){
+              var start = Number(p.start || 0); if (start && start < 1e12) start *= 1000;
+              var end = start + Number(p.duration || 0) * 60000;
+              var label = (start ? new Date(start).toLocaleString() + ' — ' : '') + (p.title || p.name || p.assetId || 'Передача');
+              page.appendChild(button(label, function(){
+                if (!p.assetId) { notify('У передачі немає assetId'); return; }
+                if (start && end < Date.now()) playCatchup(channel, p, start);
+                else if (start && start <= Date.now()) playCatchup(channel, p, start);
+                else notify('Ця передача ще не почалася.');
+              }));
             });
+            page.appendChild(button('Назад до каналів', function(){ loadChannels(page); }));
+          }).catch(function(e){ showError(page,e); });
+    }
 
-            // Додаємо пункт "Налаштування"
-            items.unshift({
-                title: t('settings'),
-                subtitle: '⚙️',
-                onSelect: function(){
-                    openSettings(api);
+    function playCatchup(channel, program, startMs) {
+        var id = channel.id || channel.assetId || channel.asset_id;
+        var version = session.userId === 'anonymous' ? '4' : '2';
+        // Kodi implementation uses milliseconds for EPG dates and livechannels/vN/playback for catch-up.
+        request(API + 'livechannels/v' + version + '/playback;jsessionid=' + encodeURIComponent(session.sessionId) + '?assetId=' + encodeURIComponent(id) + '&date=' + encodeURIComponent(startMs))
+          .then(function(data){
+            var url = data && (data.uri || data.url || data.liveChannelUrl);
+            if (!url) throw new Error('API не повернув URL запису');
+            if (window.Lampa && Lampa.Player && Lampa.Player.play) Lampa.Player.play({url:url,title:program.title || program.name || 'Запис передачі'});
+            else window.location.href = url;
+          }).catch(function(e){ notify('Не вдалося відтворити запис: ' + (e.message || e)); });
+    }
+
+    function openCategories(page, groups) {
+        page.innerHTML = '';
+        page.appendChild(el('div','ks-title','Категорії та телеканали'));
+        var list = Array.isArray(groups) ? groups : (groups && (groups.elements || groups.items || groups.content) || []);
+        if (!list.length) { page.appendChild(el('div','ks-note','API повернув порожній список або інший формат даних.')); return; }
+        list.forEach(function(group){
+          var name = group.title || group.name || group.label || group.nameKey || 'Категорія';
+          page.appendChild(button(name, function(){
+            var id = group.id || group.assetId || group.contentAreaId;
+            if (!id) { showError(page,new Error('У категорії немає ID')); return; }
+            request(API + 'compilations;jsessionid=' + encodeURIComponent(session.sessionId), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contentAreaId:id})})
+              .then(function(data){
+                page.innerHTML=''; page.appendChild(el('div','ks-title',name));
+                var comps = Array.isArray(data) ? data : (data && (data.elements || data.items || data.content) || []);
+                comps.forEach(function(comp){ page.appendChild(button(comp.title || comp.name || 'Відкрити', function(){ loadCompilation(page,id,comp); })); });
+                if (!comps.length) loadCompilation(page,id,{id:id,assetId:id,title:name});
+                page.appendChild(button('Назад до категорій',function(){loadChannels(page);}));
+              }).catch(function(e){ showError(page,e); });
+          }));
+        });
+        page.appendChild(button('Назад',openHome));
+    }
+
+    function loadCompilation(page, areaId, comp) {
+        var compId = comp.id || comp.assetId || comp.elementId || areaId;
+        page.innerHTML=''; page.appendChild(el('div','ks-title',comp.title || comp.name || 'Елементи'));
+        request(API + 'gallery/filters/content-area;jsessionid=' + encodeURIComponent(session.sessionId), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({compilationElementId:compId,filterElementIds:[],filterSortElementId:null,offset:0,limit:500,sortOrder:null})})
+          .then(function(data){
+            var items = Array.isArray(data) ? data : (data && (data.elements || data.items || data.content) || []);
+            if (!items.length) page.appendChild(el('div','ks-note','Немає елементів у цій категорії.'));
+            items.forEach(function(item){
+              var title = item.title || item.name || item.label || item.assetId || 'Елемент';
+              page.appendChild(button(title, function(){
+                var t = String(item.type || item.assetType || '').toUpperCase();
+                if (t.indexOf('LIVE') >= 0 || item.liveChannel || item.isLiveChannel) { openEpg(item); }
+                else playChannel(item);
+              }));
+            });
+            page.appendChild(button('Назад',function(){loadChannels(page);}));
+          }).catch(function(e){showError(page,e);});
+    }
+
+    function playChannel(channel) {
+        var id = channel.id || channel.assetId || channel.asset_id;
+        if (!id) { notify('Не знайдено ID каналу'); return; }
+        var version = session.userId === 'anonymous' ? '4' : '2';
+        request(API + 'play/v' + version + ';jsessionid=' + encodeURIComponent(session.sessionId) + '?assetId=' + encodeURIComponent(id))
+            .then(function (data) {
+                var url = data && (data.liveChannelUrl || (data.media && data.media[0] && data.media[0].url));
+                if (!url) throw new Error('API не повернув URL потоку');
+                if (window.Lampa && Lampa.Player && Lampa.Player.play) {
+                    Lampa.Player.play({ url: url, title: channel.title || channel.name || 'Київстар ТБ' });
+                } else {
+                    window.location.href = url;
                 }
+            }).catch(function (e) {
+                notify('Не вдалося запустити канал: ' + (e.message || e));
             });
-
-            Lampa.Select.show({
-                title: TITLE,
-                items: items,
-                onBack: function(){
-                    if (Lampa.Controller && Lampa.Controller.toggle) Lampa.Controller.toggle('content');
-                }
-            });
-        });
     }
 
-    /* ══════════════════════════════════════════════════════════════════
-       НАЛАШТУВАННЯ
-       ═════════════════════════════════════════════════════════════════ */
-    function openSettings(api) {
-        if (!Lampa.Select || !Lampa.Select.show) return;
-
-        var session = setting(KEYS.session);
-        var items = [
-            { title: t('login_type') + ': ' + setting(KEYS.loginType), action: 'login-type' },
-            { title: t('phone') + ': ' + (setting(KEYS.phone) || '—'), action: 'phone' },
-            { title: t('password') + ': ' + (setting(KEYS.password) ? '••••••' : '—'), action: 'password' },
-            { title: t('sms_code') + ': ' + (setting(KEYS.otp) || '—'), action: 'otp' },
-            { title: t('refresh_session') + (session && session.userId ? ' (' + session.userId + ')' : ''), action: 'session' },
-            { title: t('send_sms'), action: 'send-sms' },
-            { title: t('logout'), action: 'logout' }
-        ];
-
-        Lampa.Select.show({
-            title: TITLE + ' — ' + t('settings'),
-            items: items,
-            onSelect: function(item){
-                if (item.action === 'login-type') selectLoginType(api);
-                else if (item.action === 'phone') editValue(t('phone'), KEYS.phone, api);
-                else if (item.action === 'password') editValue(t('password'), KEYS.password, api);
-                else if (item.action === 'otp') editValue(t('sms_code'), KEYS.otp, api);
-                else if (item.action === 'session') refreshSession(api);
-                else if (item.action === 'send-sms') sendSms(api);
-                else if (item.action === 'logout') doLogout(api);
-                openSettings(api);
-            },
-            onBack: function(){
-                openKyivstarMenu();
-            }
-        });
-    }
-
-    function selectLoginType(api) {
-        Lampa.Select.show({
-            title: t('login_type'),
-            items: [
-                { title: t('anonymous'), value: 'anonymous' },
-                { title: t('account'), value: 'account' },
-                { title: t('phone_otp'), value: 'phone' }
-            ],
-            onSelect: function(item){
-                saveSetting(KEYS.loginType, item.value);
-                saveSetting(KEYS.session, null);
-            },
-            onBack: function(){ openSettings(api); }
-        });
-    }
-
-    function editValue(title, key, api) {
-        var cur = setting(key) || '';
-        var val = window.prompt(title, cur);
-        if (val !== null) {
-            saveSetting(key, val);
-            if (key !== KEYS.otp) saveSetting(KEYS.session, null);
+    function init() {
+        loadSession();
+        if (window.Lampa && Lampa.Menu && Lampa.Menu.addButton) {
+            Lampa.Menu.addButton(
+                '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 5h16v11H4zM2 18h20v2H2z"/></svg>',
+                'Київстар ТБ',
+                openHome
+            );
+        } else {
+            openHome();
         }
     }
 
-    function sendSms(api) {
-        var phone = String(setting(KEYS.phone) || '').replace(/\D/g, '');
-        if (!phone) { notify('Введіть номер телефону'); return; }
-        api.ensurePhonePendingSession().then(function(s){
-            return api.sendOtp(s.sessionId, phone);
-        }).then(function(){
-            notify('SMS надіслано');
-        }).catch(function(err){
-            notify(err.message || t('error'));
+    if (window.Lampa && Lampa.Listener) {
+        if (window.appready) init();
+        else Lampa.Listener.follow('app', function (e) {
+            if (e.type === 'ready') init();
         });
+    } else {
+        window.addEventListener('load', init);
     }
-
-    function refreshSession(api) {
-        api.ensureSession(true).then(function(){
-            notify('Сесію оновлено');
-        }).catch(function(err){
-            notify(err.message || t('error'));
-        });
-    }
-
-    function doLogout(api) {
-        api.logout().then(function(){
-            notify('Ви вийшли');
-        });
-    }
-
-    /* ══════════════════════════════════════════════════════════════════
-       ІНІЦІАЛІЗАЦІЯ
-       ═════════════════════════════════════════════════════════════════ */
-    function boot() {
-        if (!window.Lampa || !Lampa.Storage) {
-            setTimeout(boot, 300);
-            return;
-        }
-        if (window[PLUGIN_FLAG]) return;
-        window[PLUGIN_FLAG] = true;
-
-        try {
-            ensureDeviceId();
-            addSideMenuItem();
-            log(TITLE + ' ready');
-        } catch(e) {
-            console.error(TITLE + ' boot error:', e);
-        }
-
-        if (window.appready) {
-            addSideMenuItem();
-        } else if (Lampa.Listener && Lampa.Listener.follow) {
-            Lampa.Listener.follow('app', function(event){
-                if (event.type === 'ready') addSideMenuItem();
-            });
-        }
-    }
-
-    // Старт
-    if (window.appready) boot();
-    else Lampa.Listener.follow('app', function(e){ if (e.type === 'ready') boot(); });
-
 })();
