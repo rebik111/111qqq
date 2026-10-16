@@ -9,6 +9,7 @@
     var AUTH_REALM = '557455cfe4b04ad886a6ae41';
     var USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0';
     var REFERER = 'https://tv.kyivstar.ua/';
+    var LIMIT = 50;
 
     var KEYS = {
         loginType: 'kyivstar_login_type',
@@ -115,8 +116,7 @@
         if (!force && cur && cur.sessionId && cur.userId) return Promise.resolve(cur);
 
         var loginType = setting(KEYS.loginType);
-        var p = this.loginAnonymous();
-        return p.then(function (profile) {
+        return this.loginAnonymous().then(function (profile) {
             if (!profile || !profile.sessionId) throw new Error('Login failed');
             saveSetting(KEYS.session, { userId: profile.userId, sessionId: profile.sessionId });
             return setting(KEYS.session);
@@ -145,6 +145,23 @@
         });
     };
 
+    KyivstarApi.prototype.getContentAreas = function () {
+        var self = this;
+        return this.withSession(function (s) {
+            return self.request('api/v2/contentareas/MY_TV_WEB;jsessionid=' + encodeURIComponent(s.sessionId) + '?includeRestricted=true');
+        });
+    };
+
+    KyivstarApi.prototype.getContentGroupElements = function (groupId, filters, sort, offset, limit) {
+        var self = this;
+        return this.withSession(function (s) {
+            var url = 'gallery/contentgroups/' + encodeURIComponent(groupId) + ';jsessionid=' + encodeURIComponent(s.sessionId) + '?offset=' + offset + '&limit=' + limit;
+            if (filters && filters.length) url += '&filters=' + encodeURIComponent(JSON.stringify(filters));
+            if (sort) url += '&sort=' + encodeURIComponent(sort);
+            return self.request(url);
+        });
+    };
+
     KyivstarApi.prototype.getStreamUrl = function (assetId, videoType) {
         var self = this;
         return this.withSession(function (s) {
@@ -160,7 +177,7 @@
         });
     };
 
-    // ---------- Helpers ----------
+    // ---------- Utilities ----------
     function mapChannel(ch) {
         var images = ch.images || [];
         var logo = images.length ? (images[0].url || '') : '';
@@ -178,27 +195,31 @@
         };
     }
 
-    function loadAllChannels(api, cb) {
-        notify('Завантаження каналів...');
-        api.getLiveChannelGroups().then(function (groups) {
-            var all = [];
-            var pending = groups.length;
-            if (pending === 0) { cb([]); return; }
-            groups.forEach(function (g) {
-                api.getGroupElements(g.assetId || g.id).then(function (list) {
-                    (list || []).forEach(function (ch) {
-                        if (ch.purchased === false) return;
-                        all.push(mapChannel(ch));
-                    });
-                    pending--;
-                    if (pending === 0) cb(all);
-                }).catch(function () {
-                    pending--;
-                    if (pending === 0) cb(all);
-                });
+    function mapCategory(cat) {
+        var title = cat.name || cat.displayName || 'Category';
+        return {
+            id: cat.assetId,
+            title: title,
+            subtitle: 'Category',
+            image: '',
+            assetId: cat.assetId,
+            videoType: 'CATEGORY',
+            locked: false,
+            group: cat.assetId
+        };
+    }
+
+    function loadChannelsForGroup(groupId, cb) {
+        var api = new KyivstarApi();
+        api.getGroupElements(groupId).then(function (list) {
+            var out = [];
+            (list || []).forEach(function (ch) {
+                if (ch.purchased === false) return;
+                out.push(mapChannel(ch));
             });
+            cb(out);
         }).catch(function (err) {
-            notify('Помилка: ' + (err.message || err));
+            notify('Помилка групи: ' + (err.message || err));
             cb([]);
         });
     }
@@ -214,7 +235,51 @@
         });
     }
 
-    function showChannels(api, items) {
+    // ---------- Side menu entry ----------
+    function addSideMenuEntry() {
+        var list = $('.menu .menu__list').eq(0);
+        if (!list.length) { setTimeout(addSideMenuEntry, 300); return; }
+        if ($('.menu__item[data-action="kyivstar-tv"]').length) return;
+
+        var item = $('<li class="menu__item selector" data-action="kyivstar-tv">' +
+            '<div class="menu__ico">📺</div>' +
+            '<div class="menu__text">' + TITLE + '</div>' +
+            '</li>');
+
+        item.on('hover:enter click', function () {
+            log('menu clicked');
+            var api = new KyivstarApi();
+            api.getLiveChannelGroups().then(function (groups) {
+                var all = [];
+                var pending = groups.length;
+                if (pending === 0) {
+                    showChannels(api, []);
+                    return;
+                }
+                groups.forEach(function (g) {
+                    api.getGroupElements(g.assetId || g.id).then(function (list) {
+                        (list || []).forEach(function (ch) {
+                            if (ch.purchased === false) return;
+                            all.push(mapChannel(ch));
+                        });
+                        pending--;
+                        if (pending === 0) showChannels(api, all);
+                    }).catch(function () {
+                        pending--;
+                        if (pending === 0) showChannels(api, all);
+                    });
+                });
+            }).catch(function (err) {
+                notify('Помилка: ' + (err.message || err));
+                showChannels(api, []);
+            });
+        });
+
+        list.append(item);
+        log('menu entry added');
+    }
+
+    function showChannels(api, channels) {
         if (!Lampa.Select || !Lampa.Select.show) {
             notify(TITLE + ': Lampa.Select недоступний');
             return;
@@ -222,7 +287,7 @@
 
         Lampa.Select.show({
             title: TITLE + ' — Канали',
-            items: items.map(function (ch) {
+            items: channels.map(function (ch) {
                 return {
                     title: ch.title + (ch.locked ? ' 🔒' : ''),
                     subtitle: ch.videoType === 'VIRTUAL' ? 'VIRTUAL' : 'IP',
@@ -239,84 +304,84 @@
         });
     }
 
-    // ---------- Side menu ----------
-    function addSideMenuEntry() {
-        var list = $('.menu .menu__list').eq(0);
-        if (!list.length) { setTimeout(addSideMenuEntry, 500); return; }
-        if ($('.menu__item[data-action="kyivstar-tv"]').length) return;
-
-        var item = $('<li class="menu__item selector" data-action="kyivstar-tv">' +
-            '<div class="menu__ico">📺</div>' +
-            '<div class="menu__text">' + TITLE + '</div>' +
-            '</li>');
-
-        item.on('hover:enter click', function () {
+    // ---------- Lampa API source registration (same pattern as dxnsav) ----------
+    var source = {
+        main: function (params, onComplete, onError) {
             var api = new KyivstarApi();
-            loadAllChannels(api, function (channels) {
-                showChannels(api, channels);
-            });
-        });
-
-        list.append(item);
-        log('menu entry added');
-    }
-
-    // ---------- Lampa component registration ----------
-    var plugin = {
-        get: function (params, oncomplete, onerror) {
-            var api = new KyivstarApi();
-            loadAllChannels(api, function (channels) {
-                var items = channels.map(function (ch) {
-                    return {
-                        title: ch.title + (ch.locked ? ' 🔒' : ''),
-                        subtitle: ch.videoType,
-                        image: ch.image,
-                        assetId: ch.assetId,
-                        videoType: ch.videoType,
-                        locked: ch.locked,
-                        type: ch.locked ? 'nav' : 'vod',
-                        url: ch.locked ? '' : 'plugin://' + COMPONENT + '/play/' + ch.assetId
-                    };
+            api.getContentAreas().then(function (areas) {
+                var items = [];
+                (areas || []).forEach(function (a) {
+                    if (a && a.assetId) {
+                        items.push({
+                            id: a.assetId,
+                            title: a.name || a.title || 'Selection',
+                            subtitle: 'Category',
+                            image: '',
+                            assetId: a.assetId,
+                            videoType: 'CATEGORY',
+                            group: a.assetId
+                        });
+                    }
                 });
-                oncomplete(items);
+                onComplete({
+                    title: TITLE,
+                    url: '',
+                    source: COMPONENT,
+                    results: items
+                });
+            }).catch(function (err) {
+                if (onError) onError(err);
             });
         },
-        stream: function (params, oncomplete, onerror) {
+        list: function (params, onComplete, onError) {
             var api = new KyivstarApi();
-            var item = allChannels && allChannels.find ?
-                allChannels.find(function (c) { return c.assetId === params.assetId || c.id === params.assetId; }) :
-                params;
-            playItem(api, item);
-            oncomplete('');
-        }
+            api.getContentGroupElements(params.groupId || 'root', params.filters || [], params.sort || null, 0, LIMIT).then(function (items) {
+                var out = [];
+                (items || []).forEach(function (ch) {
+                    if (ch.purchased === false) return;
+                    out.push(mapChannel(ch));
+                });
+                onComplete({
+                    title: params.title,
+                    url: '',
+                    source: COMPONENT,
+                    page: 1,
+                    total_pages: 1,
+                    total_results: out.length,
+                    results: out
+                });
+            }).catch(function (err) {
+                if (onError) onError(err);
+            });
+        },
+        full: function (params, onComplete, onError) {
+            // fallback – original plugin handles full UI
+            onComplete({ movie: null });
+        },
+        seasons: function (params, from, onComplete) {
+            onComplete([]);
+        },
+        img: function (params, onComplete, onError) {
+            notify('img hook not implemented in simplified version');
+            onComplete({});
+        },
+        clear: function () {
+            new KyivstarApi().clear();
+        },
+        discovery: false
     };
 
-    if (Lampa.Component && Lampa.Component.add) {
-        Lampa.Component.add(COMPONENT, {
-            name: TITLE,
-            source: COMPONENT,
-            get: plugin.get,
-            stream: plugin.stream
-        });
-    }
-
-    if (Lampa.Listener && Lampa.Listener.follow) {
-        Lampa.Listener.follow('sources', function (e) {
-            if (e.type === 'start' && e.object && e.object.sources) {
-                var exists = e.object.sources.find(function (s) { return s.id === COMPONENT; });
-                if (!exists) {
-                    e.object.sources.push({
-                        id: COMPONENT,
-                        title: TITLE,
-                        icon: 'https://dxnsav.github.io/plugin.video.kyivstar.tv/plugin.kyivstar.tv/assets/favicon.ico',
-                        action: function () {
-                            showChannels(new KyivstarApi(), allChannels);
-                        }
-                    });
-                    Lampa.Listener.send('sources_update');
-                }
-            }
-        });
+    function createApiSource() {
+        var base = Lampa.Api && Lampa.Api.sources ? Lampa.Api.sources.tmdb : null;
+        var src = base ? $.extend({}, base) : {};
+        src.main = source.main;
+        src.list = source.list;
+        src.full = source.full;
+        src.seasons = source.seasons;
+        src.img = source.img;
+        src.clear = source.clear;
+        src.discovery = false;
+        return src;
     }
 
     // ---------- Boot ----------
@@ -329,6 +394,19 @@
         window[PLUGIN_FLAG] = true;
 
         ensureDeviceId();
+
+        // Register Lampa API source like original plugin
+        if (Lampa.Api && Lampa.Api.sources) {
+            Lampa.Api.sources[COMPONENT] = createApiSource();
+            if (Lampa.Params && Lampa.Params.values && Lampa.Params.select) {
+                var values = $.extend({}, Lampa.Params.values.source || {});
+                values[COMPONENT] = TITLE;
+                Lampa.Params.select('source', values, Lampa.Storage.get('source', 'tmdb'));
+            }
+            log('api source registered');
+        }
+
+        // Add side menu entry
         addSideMenuEntry();
 
         if (window.appready) {
@@ -336,13 +414,14 @@
         } else if (Lampa.Listener && Lampa.Listener.follow) {
             Lampa.Listener.follow('app', function (event) {
                 if (event.type === 'ready') {
+                    log('ready event');
                     addSideMenuEntry();
-                    log('loaded via listener');
                 }
             });
         }
     }
 
+    var PLUGIN_FLAG = 'kyivstar_tv_boot';
     if (window.appready) boot();
     else if (Lampa.Listener && Lampa.Listener.follow) {
         Lampa.Listener.follow('app', function (event) {
