@@ -1,84 +1,82 @@
 (function(){
     'use strict';
 
-    // Minimal LAMPA plugin skeleton. The full implementation will be modularized
-    // into src/kyivstar_api.js, src/epg/indexeddb.js and UI modules.
+    /*
+      Тестовий плагін Kyivstar для швидкої перевірки на lampa.mx.
+      - Реєструє плагін у window.lampa_plugins
+      - Після ініціалізації виконує короткий запит getContentAreas() через KyivstarApi
+      - Логи виводяться у консоль і через Lampa.Noty (якщо доступно)
 
-    // Plugin configuration
-    var COMPONENT = 'kyivstar_tv';
-    var TITLE = 'Kyivstar TV (WIP)';
+      Використовуйте цей файл для швидкого тестування підключення та CORS/HTTP.
+    */
 
-    // Ensure Lampa is available before booting
+    var COMPONENT = 'kyivstar_tv_test';
+    var TITLE = 'Kyivstar TV — Test Build';
+
+    function notify(msg){
+        try{
+            if(window.Lampa && Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(String(msg));
+            else console.log('NOTY: ' + msg);
+        }catch(e){ console.log('NOTY ERR', e); }
+    }
+
     function boot(){
         if(!window.Lampa || !window.Lampa.Storage){
             setTimeout(boot, 200);
             return;
         }
 
-        try{
-            // Expose minimal interface for Lampa integration
-            if(!window.lampa_plugins) window.lampa_plugins = [];
+        if(!window.lampa_plugins) window.lampa_plugins = [];
 
-            var plugin = {
-                id: COMPONENT,
-                name: TITLE,
-                version: '0.1.0',
-                type: 'video',
-                icon: '',
-
-                // Called when LAMPA wants to open the plugin main screen
-                show: function(){
-                    showMain();
-                },
-
-                // Search integration (called by Lampa Search)
-                search: function(params, callback){
-                    var q = params && params.query ? params.query : '';
-                    var api = new KyivstarApi();
-                    api.search(q).then(function(results){
-                        // Map to Lampa rows (simple mapping for prototype)
-                        var cards = (results || []).map(function(item){
-                            return {
-                                id: item.assetId || item.id || '',
-                                title: item.name || item.title || item.displayName || '',
-                                poster: item.image || (item.images && item.images[0] && item.images[0].url) || '',
-                                source: COMPONENT,
-                                _kyivstar: item
-                            };
-                        });
-                        callback(cards);
-                    }).catch(function(err){
-                        console.error('Kyivstar search error', err);
-                        callback([]);
-                    });
+        var plugin = {
+            id: COMPONENT,
+            name: TITLE,
+            version: '0.1.0-test',
+            type: 'video',
+            icon: '',
+            show: function(){
+                if(window.Lampa && Lampa.Activity && Lampa.Activity.push){
+                    Lampa.Activity.push({ component: 'main', source: COMPONENT, title: TITLE, page: 1 });
+                } else {
+                    notify(TITLE + ' opened');
                 }
-            };
+            }
+        };
 
-            window.lampa_plugins.push(plugin);
-            console.info(TITLE + ' plugin loaded (skeleton)');
+        window.lampa_plugins.push(plugin);
+        console.info(TITLE + ' registered');
 
-        }catch(e){
-            console.error('Kyivstar plugin boot failed', e);
-        }
+        // Короткий тест мережі: виклик content areas
+        setTimeout(runQuickApiTest, 500);
     }
 
-    function showMain(){
-        // Minimal main activity: open a category screen using Lampa.Activity
-        if(window.Lampa && window.Lampa.Activity && Lampa.Activity.push){
-            Lampa.Activity.push({
-                component: 'main',
-                source: COMPONENT,
-                title: TITLE,
-                page: 1
+    function runQuickApiTest(){
+        try{
+            if(typeof window.KyivstarApi !== 'function'){
+                console.warn('KyivstarApi не знайдено у глобальній області. Переконайтесь, що src/kyivstar_api.js підключений.');
+                notify('KyivstarApi not loaded');
+                return;
+            }
+
+            var api = new KyivstarApi();
+            console.log('Test: calling KyivstarApi.getContentAreas()...');
+            notify('Тест: викликаю getContentAreas()');
+
+            api.getContentAreas().then(function(areas){
+                console.log('getContentAreas SUCCESS:', areas);
+                notify('getContentAreas OK: ' + (Array.isArray(areas) ? areas.length + ' areas' : 'result'));
+            }).catch(function(err){
+                console.error('getContentAreas ERROR:', err);
+                try{
+                    var msg = (err && err.message) ? err.message : String(err);
+                    notify('getContentAreas ERROR: ' + msg);
+                }catch(e){ console.log('notify err', e); }
             });
-            return;
+        }catch(e){
+            console.error('runQuickApiTest exception', e);
+            notify('Test exception: ' + (e && e.message ? e.message : String(e)));
         }
-
-        alert(TITLE + ' — Lampa API not ready');
     }
-
-    // Basic API client constructor is in src/kyivstar_api.js; this file expects it to be
-    // available in the global scope as KyivstarApi. The port will later bundle modules.
 
     boot();
 })();
